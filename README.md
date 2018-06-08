@@ -1,2 +1,3 @@
 # weighted-nmt
-Adapted Weights for Neural Machine Translation
+Source code for "Adapted Weights for Neural Machine Translation"
+The source code is developed upon dl4mt
