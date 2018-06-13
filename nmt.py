@@ -574,7 +574,16 @@ def init_params(options):
     params['W_m_r'] = ortho_weight(options['dim_word'])
     params['W_m_p'] = ortho_weight(options['dim_word'])
     params['b_m_b'] = numpy.zeros((options['dim_word'],)).astype('float32')
-    
+
+    model_size = 0
+    for kk, vv in params.iteritems():
+        print("Init {} shape {}".format( kk, str(vv.shape)))
+        if(len(vv.shape) == 2):
+            model_size += vv.shape[0]*vv.shape[1]
+        else:
+            model_size += vv.shape[0]
+    print('model size %d'%(model_size))
+
     return params
 
 
@@ -627,7 +636,6 @@ def deep_readout(tparams, options, proj_h, emb, ctxs):
     readout = tensor.tanh(logit_lstm * p0 + logit_prev * p1 + logit_ctx * p2)
 
     return readout
-
 
 # build a training model
 def build_model(tparams, options):
@@ -704,7 +712,6 @@ def build_model(tparams, options):
 
     # compute word probabilities
     logit = deep_readout(tparams, options, proj_h, emb, ctxs)
-
     if options['use_dropout']:
         logit = dropout_layer(logit, use_noise, trng)
     logit = get_layer('ff')[1](tparams, logit, options,
@@ -903,7 +910,7 @@ def pred_probs(f_log_probs, prepare_data, options, iterator, verbose=True):
     probs = []
 
     n_done = 0
-
+    start_time = time.time()
     for x, y in iterator:
         n_done += len(x)
 
@@ -918,9 +925,9 @@ def pred_probs(f_log_probs, prepare_data, options, iterator, verbose=True):
         if numpy.isnan(numpy.mean(probs)):
             pdb.set_trace()
 
-        if verbose:
-            print >>sys.stderr, '%d samples computed' % (n_done)
-
+    if verbose:
+        print >>sys.stderr, '%d samples computed' % (n_done)
+    #print('valid took %.4f minutes'%(float(time.time() - start_time) / 60.))
     return numpy.array(probs)
 
 def gen_trans(test_src, test_ref, out_file, dict_src, idict_trg, \
@@ -931,7 +938,8 @@ def gen_trans(test_src, test_ref, out_file, dict_src, idict_trg, \
                     argmax=False,
                     normalize=False,
                     bleu_script='./data/mteval-v11b.pl',
-                    res_to_sgm='./data/plain2sgm'):
+                    res_to_sgm='./data/plain2sgm',
+                    apply_bpe=True):
     
     print("Begin decoding ...")
     fout = open(out_file, 'w')
@@ -953,6 +961,8 @@ def gen_trans(test_src, test_ref, out_file, dict_src, idict_trg, \
 
         if(res.strip() == ''):
         	res = 'UNK'
+        if apply_bpe:
+            res = res.replace('@@ ','')
 
         fout.write(res + '\n')
         if i % 100 == 0:
@@ -964,25 +974,35 @@ def gen_trans(test_src, test_ref, out_file, dict_src, idict_trg, \
     print('Decoding took %.4f minutes'%(float(time.time() - start_time) / 60.))
     
     try:
-        print("Evaluate ...")  
-        cmd_res_to_sgm = ['python ', res_to_sgm + '.py', out_file, test_src+'.sgm', out_file + '.sgm']      
-        cmd_bleu_cmd = ['perl', bleu_script, \
-                        '-r',   test_ref+'.sgm', \
-                        '-s',   test_src+'.sgm', \
-                        '-t',   out_file+'.sgm', \
-                        '>',    out_file+'.eval']
+        print("Evaluate ...")
+        if bleu_script.endswith('mteval-v11b.pl'):  
+	        cmd_res_to_sgm = ['python ', res_to_sgm + '.py', out_file, test_src+'.sgm', out_file + '.sgm']      
+	        cmd_bleu_cmd = ['perl', bleu_script, '-r',   test_ref+'.sgm', '-s',   test_src+'.sgm', '-t', out_file+'.sgm', '>', out_file+'.eval']
+	        
+	        print('Covert result to sgm')
+	        subprocess.check_call(" ".join(cmd_res_to_sgm), shell=True)
+	        print('Compute bleu score')
+	        subprocess.check_call(" ".join(cmd_bleu_cmd), shell=True)
+
+	        fin = open(out_file+'.eval', 'rU')
+	        out = re.search('BLEU score = [-.0-9]+', fin.readlines()[7])
+	        fin.close()
+
+	        bleu_score = float(out.group()[13:])
+        elif bleu_script.endswith('multi-bleu.perl'):
+            cmd_bleu_cmd = ['perl', bleu_script, test_ref, '<', out_file, '>', out_file+'.eval']
+            print('compute bleu score')
+            subprocess.check_call(" ".join(cmd_bleu_cmd), shell=True)
+
+            fin = open(out_file+'.eval', 'rU')
+
+            out = re.search('BLEU = [-.0-9]+', fin.readlines()[0])
+            fin.close()
+            bleu_score = float(out.group()[7:])
+        else:
+            print('bleu_script error, return null')
+            bleu_score = 0.
         
-        print('Covert result to sgm')
-        subprocess.check_call(" ".join(cmd_res_to_sgm), shell=True)
-        print('Compute bleu score')
-        subprocess.check_call(" ".join(cmd_bleu_cmd), shell=True)
-
-        fin = open(out_file+'.eval', 'rU')
-        out = re.search('BLEU score = [-.0-9]+', fin.readlines()[7])
-        fin.close()
-
-        bleu_score = float(out.group()[13:])
-
         return bleu_score
     except:
         print('Evaluating error, return null')
@@ -1101,14 +1121,14 @@ def sgd(lr, tparams, grads, x, mask, y, cost):
     return f_grad_shared, f_update
 
 
-def train(dim_word=100,  # word vector dimensionality
-          dim=1000,  # the number of LSTM units
+def train(dim_word=512,  # word vector dimensionality
+          dim=1024,  # the number of LSTM units
           encoder='gru',
           decoder='gru_cond',
-          patience=10,  # early stopping patience
+          patience=10000,  # early stopping patience
           max_epochs=5000,
           finish_after=10000000,  # finish after this many updates
-          dispFreq=100,
+          dispFreq=200,
           decay_c=0.,  # L2 regularization penalty
           alpha_c=0.,  # alignment regularization
           clip_c=-1.,  # gradient clipping threshold
@@ -1118,7 +1138,7 @@ def train(dim_word=100,  # word vector dimensionality
           maxlen=100,  # maximum length of the description
           optimizer='rmsprop',
           batch_size=16,
-          valid_batch_size=16,
+          valid_batch_size=32,
           saveto='model.npz',
           validFreq=2000,
           validFreq_fine=1000,
@@ -1131,7 +1151,10 @@ def train(dim_word=100,  # word vector dimensionality
           dictionaries=['./data/vocab_source', './data/vocab_target'],
           use_dropout=False,
           reload_=False,
-          overwrite=False):
+          overwrite=False,
+          valid_mode='bleu',
+          bleu_script='./data/mteval-v11b.pl',
+          res_to_sgm='./data/plain2sgm'):
 
     # Model options
     model_options = locals().copy()
@@ -1185,19 +1208,12 @@ def train(dim_word=100,  # word vector dimensionality
 
     cost = cost.mean()
 
-    
+    # apply L2 regularization on weights
     if decay_c > 0.:
-    	# apply L2 regularization on weights
         decay_c = theano.shared(numpy.float32(decay_c), name='decay_c')
         weight_decay = 0.
         for kk, vv in tparams.iteritems():
             weight_decay += (vv ** 2).sum()
-        weight_decay *= decay_c
-        cost += weight_decay
-        # apply L1 regularization on weights
-        weight_decay = 0.
-        for kk, vv in tparams.iteritems():
-            weight_decay += abs(vv).sum()
         weight_decay *= decay_c
         cost += weight_decay
 
@@ -1339,13 +1355,38 @@ def train(dim_word=100,  # word vector dimensionality
             # validate model on validation set and early stop if necessary
             if  (uidx <= val_burn_in_fine and numpy.mod(uidx, validFreq) == 0 ) or \
                  uidx >  val_burn_in_fine and numpy.mod(uidx, validFreq_fine) == 0 :
-                
+                #------------------------------------------------
+                if (uidx > val_burn_in):
+                    # save with uidx
+                    if not overwrite:
+                        print 'Saving the model at iteration {}...'.format(uidx),
+                        saveto_uidx = '{}.iter{}.npz'.format(
+                            os.path.splitext(saveto)[0], uidx)
+                        numpy.savez(saveto_uidx, history_errs=history_errs,
+                                    uidx=uidx, **unzip(tparams))
+                        pkl.dump(model_options, open('%s.pkl' % saveto_uidx, 'wb'))
+                        print 'Done'
+                #------------------------------------------------
                 use_noise.set_value(0.)
-                valid_err = gen_trans(test_src=valid_datasets[0], test_ref=valid_datasets[1], out_file=valid_datasets[2], \
-                                      dict_src=dictionaries[0], idict_trg=worddicts_r[1], \
-                                      tparams=tparams, f_init=f_init, f_next=f_next, model_options=model_options, \
-                                      trng=trng, k=10, stochastic=False)
-                print('Valid  Epoch %d  Updates %d valid_bleu %.4f'%(eidx, uidx, valid_err))
+
+                if (valid_mode == 'bleu'):
+                    valid_err = gen_trans(test_src=valid_datasets[0], test_ref=valid_datasets[1], out_file=valid_datasets[2], \
+                                          dict_src=dictionaries[0], idict_trg=worddicts_r[1], \
+                                          tparams=tparams, f_init=f_init, f_next=f_next, model_options=model_options, \
+                                          trng=trng, k=10, stochastic=False, bleu_script=bleu_script)
+                    print('Valid  Epoch %d  Updates %d valid_bleu %.4f'%(eidx, uidx, valid_err))
+                elif (valid_mode == 'ce'):
+                    valid = TextIterator(valid_datasets[0], valid_datasets[1],
+                                          dictionaries[0], dictionaries[1],
+                                          n_words_source=n_words_src, n_words_target=n_words,
+                                          batch_size=valid_batch_size,
+                                          maxlen=maxlen * 3)
+                    valid_errs = pred_probs(f_log_probs, prepare_data, model_options, valid)
+                    valid_err = valid_errs.mean()
+                    print('Valid  Epoch %d  Updates %d valid_ce %.4f'%(eidx, uidx, valid_err))
+                else:
+                    continue
+                
                 print ('timestamp {} {}'.format(int(uidx),time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())))
                 sys.stdout.flush()
                 history_errs.append(valid_err)
@@ -1364,17 +1405,7 @@ def train(dim_word=100,  # word vector dimensionality
 
                 if numpy.isnan(valid_err):
                     pdb.set_trace()
-                #-----------------------------------
-                if (uidx > val_burn_in):
-	                # save with uidx
-	                if not overwrite:
-	                    print 'Saving the model at iteration {}...'.format(uidx),
-	                    saveto_uidx = '{}.iter{}.npz'.format(
-	                        os.path.splitext(saveto)[0], uidx)
-	                    numpy.savez(saveto_uidx, history_errs=history_errs,
-	                                uidx=uidx, **unzip(tparams))
-	                    pkl.dump(model_options, open('%s.pkl' % saveto_uidx, 'wb'))
-	                    print 'Done'
+
 
             # finish after this many updates
             if uidx >= finish_after:
