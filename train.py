@@ -46,7 +46,7 @@ if __name__ == '__main__':
         'model': ['/data/ycli/exp/deen/wbpe/train_model.npz'],
         'dim_word': [620],
         'dim': [1000],
-        'n-words': [30001],
+        'n-words': [30000],
         'optimizer': ['adam'],
         'decay-c': [1e-6],
         'clip-c': [1.],
