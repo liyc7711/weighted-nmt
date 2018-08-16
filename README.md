@@ -11,3 +11,7 @@ THEANO_FLAGS=device=gpu,floatX=float32 python train.py
 ```
 THEANO_FLAGS=device=gpu,floatX=float32 python translate.py 
 ```
+## Reference
+```
+Yachao Li, Junhui Li and Min Zhang. Adaptive Weighting for Neural Machine Translation. Proceedings of the 27th International Conference on Computational Linguistics (COLING 2018), 2018.
+```
